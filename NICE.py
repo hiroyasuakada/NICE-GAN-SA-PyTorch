@@ -120,7 +120,7 @@ class NICE(object) :
         self.gen2A = ResnetGenerator(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
         self.disA = Discriminator(input_nc=self.img_ch, ndf=self.ch, n_layers=self.n_dis).to(self.device)
         self.disB = Discriminator(input_nc=self.img_ch, ndf=self.ch, n_layers=self.n_dis).to(self.device)
-        
+
         print('-----------------------------------------------')
         input = torch.randn([1, self.img_ch, self.img_size, self.img_size]).to(self.device)
         macs, params = profile(self.disA, inputs=(input, ))
@@ -129,11 +129,17 @@ class NICE(object) :
         print('[Network %s] Total number of FLOPs: ' % 'disA', macs)
         print('-----------------------------------------------')
         _,_, _,  _, real_A_ae = self.disA(input)
-        macs, params = profile(self.gen2B, inputs=(real_A_ae, ))
+        macs, params = profile(self.gen2B, inputs=(real_A_ae, input, ))
         macs, params = clever_format([macs*2, params*2], "%.3f")
         print('[Network %s] Total number of parameters: ' % 'gen2B', params)
         print('[Network %s] Total number of FLOPs: ' % 'gen2B', macs)
         print('-----------------------------------------------')
+
+        # self.gpu_ids = [0, 1, 2]
+        # self.gen2B = torch.nn.DataParallel(self.gen2B, self.gpu_ids)
+        # self.gen2A = torch.nn.DataParallel(self.gen2A, self.gpu_ids)
+        # self.disA = torch.nn.DataParallel(self.disA, self.gpu_ids)
+        # self.disB = torch.nn.DataParallel(self.disB, self.gpu_ids)
 
         """ Define Loss """
         self.L1_loss = nn.L1Loss().to(self.device)
@@ -201,7 +207,8 @@ class NICE(object) :
                 trainB_iter = iter(self.trainB_loader)
                 real_B, _ = trainB_iter.next()
 
-            real_A, real_B = real_A.to(self.device), real_B.to(self.device)
+            real_A = real_A.to(self.device)
+            real_B = real_B.to(self.device)
 
             # Update D
             self.D_optim.zero_grad()
@@ -209,8 +216,8 @@ class NICE(object) :
             real_LA_logit,real_GA_logit, real_A_cam_logit, _, real_A_z = self.disA(real_A)
             real_LB_logit,real_GB_logit, real_B_cam_logit, _, real_B_z = self.disB(real_B)
 
-            fake_A2B = self.gen2B(real_A_z)
-            fake_B2A = self.gen2A(real_B_z)
+            fake_A2B = self.gen2B(real_A_z, real_A)
+            fake_B2A = self.gen2A(real_B_z, real_B)
 
             fake_B2A = fake_B2A.detach()
             fake_A2B = fake_A2B.detach()
@@ -241,14 +248,14 @@ class NICE(object) :
             _,  _,  _, _, real_A_z = self.disA(real_A)
             _,  _,  _, _, real_B_z = self.disB(real_B)
 
-            fake_A2B = self.gen2B(real_A_z)
-            fake_B2A = self.gen2A(real_B_z)
+            fake_A2B = self.gen2B(real_A_z, real_A)
+            fake_B2A = self.gen2A(real_B_z, real_B)
 
             fake_LA_logit, fake_GA_logit, fake_A_cam_logit, _, fake_A_z = self.disA(fake_B2A)
             fake_LB_logit, fake_GB_logit, fake_B_cam_logit, _, fake_B_z = self.disB(fake_A2B)
             
-            fake_B2A2B = self.gen2B(fake_A_z)
-            fake_A2B2A = self.gen2A(fake_B_z)
+            fake_B2A2B = self.gen2B(fake_A_z, fake_B2A)
+            fake_A2B2A = self.gen2A(fake_B_z, fake_A2B)
 
 
             G_ad_loss_GA = self.MSE_loss(fake_GA_logit, torch.ones_like(fake_GA_logit).to(self.device))
@@ -262,8 +269,8 @@ class NICE(object) :
             G_cycle_loss_A = self.L1_loss(fake_A2B2A, real_A)
             G_cycle_loss_B = self.L1_loss(fake_B2A2B, real_B)
 
-            fake_A2A = self.gen2A(real_A_z)
-            fake_B2B = self.gen2B(real_B_z)
+            fake_A2A = self.gen2A(real_A_z, real_A)
+            fake_B2B = self.gen2B(real_B_z, real_B)
 
             G_recon_loss_A = self.L1_loss(fake_A2A, real_A)
             G_recon_loss_B = self.L1_loss(fake_B2B, real_B)
@@ -329,17 +336,17 @@ class NICE(object) :
                     _, _,  _, A_heatmap, real_A_z= self.disA(real_A)
                     _, _,  _, B_heatmap, real_B_z= self.disB(real_B)
 
-                    fake_A2B = self.gen2B(real_A_z)
-                    fake_B2A = self.gen2A(real_B_z)
+                    fake_A2B = self.gen2B(real_A_z, real_A)
+                    fake_B2A = self.gen2A(real_B_z, real_B)
 
                     _, _,  _,  _,  fake_A_z = self.disA(fake_B2A)
                     _, _,  _,  _,  fake_B_z = self.disB(fake_A2B)
 
-                    fake_B2A2B = self.gen2B(fake_A_z)
-                    fake_A2B2A = self.gen2A(fake_B_z)
+                    fake_B2A2B = self.gen2B(fake_A_z, fake_B2A)
+                    fake_A2B2A = self.gen2A(fake_B_z, fake_A2B)
 
-                    fake_A2A = self.gen2A(real_A_z)
-                    fake_B2B = self.gen2B(real_B_z)
+                    fake_A2A = self.gen2A(real_A_z, real_A)
+                    fake_B2B = self.gen2B(real_B_z, real_B)
 
                     A2B = np.concatenate((A2B, np.concatenate((RGB2BGR(tensor2numpy(denorm(real_A[0]))),
                                                                cam(tensor2numpy(A_heatmap[0]), self.img_size),
@@ -371,17 +378,17 @@ class NICE(object) :
                     _, _,  _, A_heatmap, real_A_z= self.disA(real_A)
                     _, _,  _, B_heatmap, real_B_z= self.disB(real_B)
 
-                    fake_A2B = self.gen2B(real_A_z)
-                    fake_B2A = self.gen2A(real_B_z)
+                    fake_A2B = self.gen2B(real_A_z, real_A)
+                    fake_B2A = self.gen2A(real_B_z, real_B)
 
                     _, _,  _,  _,  fake_A_z = self.disA(fake_B2A)
                     _, _,  _,  _,  fake_B_z = self.disB(fake_A2B)
 
-                    fake_B2A2B = self.gen2B(fake_A_z)
-                    fake_A2B2A = self.gen2A(fake_B_z)
+                    fake_B2A2B = self.gen2B(fake_A_z, real_A)
+                    fake_A2B2A = self.gen2A(fake_B_z, real_B)
 
-                    fake_A2A = self.gen2A(real_A_z)
-                    fake_B2B = self.gen2B(real_B_z)
+                    fake_A2A = self.gen2A(real_A_z, real_A)
+                    fake_B2B = self.gen2B(real_B_z, real_B)
 
                     A2B = np.concatenate((A2B, np.concatenate((RGB2BGR(tensor2numpy(denorm(real_A[0]))),
                                                                cam(tensor2numpy(A_heatmap[0]), self.img_size),
@@ -445,7 +452,7 @@ class NICE(object) :
         for n, (real_A, real_A_path) in enumerate(self.testA_loader):
             real_A = real_A.to(self.device)
             _, _,  _, _, real_A_z= self.disA(real_A)
-            fake_A2B = self.gen2B(real_A_z)
+            fake_A2B = self.gen2B(real_A_z, real_A)
 
             A2B = RGB2BGR(tensor2numpy(denorm(fake_A2B[0])))
             print(real_A_path[0])
@@ -454,7 +461,7 @@ class NICE(object) :
         for n, (real_B, real_B_path) in enumerate(self.testB_loader):
             real_B = real_B.to(self.device)
             _, _,  _, _, real_B_z= self.disB(real_B)
-            fake_B2A = self.gen2A(real_B_z)
+            fake_B2A = self.gen2A(real_B_z, real_B)
 
             B2A = RGB2BGR(tensor2numpy(denorm(fake_B2A[0])))
             print(real_B_path[0])

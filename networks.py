@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
+from torch.nn import init
+import functools
+from torch.optim import lr_scheduler
+import torch.nn.functional as F
 
 
 class ResnetGenerator(nn.Module):
@@ -42,36 +46,53 @@ class ResnetGenerator(nn.Module):
         for i in range(n_blocks):
             setattr(self, 'UpBlock1_' + str(i+1), ResnetAdaILNBlock(ngf * mult, use_bias=False))
 
-        # Up-Sampling
-        UpBlock2 = []
-        for i in range(n_downsampling):
-            mult = 2**(n_downsampling - i)
-            # Experiments show that the performance of Up-sample and Sub-pixel is similar,
-            #  although theoretically Sub-pixel has more parameters and less FLOPs.
-            # UpBlock2 += [nn.Upsample(scale_factor=2, mode='nearest'),
-            #              nn.ReflectionPad2d(1),
-            #              nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
-            #              ILN(int(ngf * mult / 2)),
-            #              nn.ReLU(True)]
-            UpBlock2 += [nn.ReflectionPad2d(1),   
-                         nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
-                         ILN(int(ngf * mult / 2)),
-                         nn.ReLU(True),
-                         nn.Conv2d(int(ngf * mult / 2), int(ngf * mult / 2)*4, kernel_size=1, stride=1, bias=True),
-                         nn.PixelShuffle(2),
-                         ILN(int(ngf * mult / 2)),
-                         nn.ReLU(True)
-                         ]
+        # # Up-Sampling
+        # UpBlock2 = []
+        # for i in range(n_downsampling):
+        #     mult = 2**(n_downsampling - i)
+        #     # Experiments show that the performance of Up-sample and Sub-pixel is similar,
+        #     #  although theoretically Sub-pixel has more parameters and less FLOPs.
+        #     # UpBlock2 += [nn.Upsample(scale_factor=2, mode='nearest'),
+        #     #              nn.ReflectionPad2d(1),
+        #     #              nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
+        #     #              ILN(int(ngf * mult / 2)),
+        #     #              nn.ReLU(True)]
+        #     UpBlock2 += [nn.ReflectionPad2d(1),   
+        #                  nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
+        #                  ILN(int(ngf * mult / 2)),
+        #                  nn.ReLU(True),
+        #                  nn.Conv2d(int(ngf * mult / 2), int(ngf * mult / 2)*4, kernel_size=1, stride=1, bias=True),
+        #                  nn.PixelShuffle(2),
+        #                  ILN(int(ngf * mult / 2)),
+        #                  nn.ReLU(True)
+        #                  ]
 
-        UpBlock2 += [nn.ReflectionPad2d(3),
-                     nn.Conv2d(ngf, output_nc, kernel_size=7, stride=1, padding=0, bias=False),
-                     nn.Tanh()]
+        # UpBlock2 += [nn.ReflectionPad2d(3),
+        #              nn.Conv2d(ngf, output_nc, kernel_size=7, stride=1, padding=0, bias=False),
+        #              nn.Tanh()]
 
         self.FC = nn.Sequential(*FC)
         self.UpBlock0 = nn.Sequential(*UpBlock0)
-        self.UpBlock2 = nn.Sequential(*UpBlock2)
+        # self.UpBlock2 = nn.Sequential(*UpBlock2)
 
-    def forward(self, z):
+        ##########################################
+
+        self.deconv1_content = nn.ConvTranspose2d(ngf * 4, ngf * 2, 3, 2, 1, 1)
+        self.deconv1_norm_content = nn.InstanceNorm2d(ngf * 2)
+        self.deconv2_content = nn.ConvTranspose2d(ngf * 2, ngf, 3, 2, 1, 1)
+        self.deconv2_norm_content = nn.InstanceNorm2d(ngf)
+        self.deconv3_content = nn.Conv2d(ngf, 27, 7, 1, 0)
+
+        self.deconv1_attention = nn.ConvTranspose2d(ngf * 4, ngf * 2, 3, 2, 1, 1)
+        self.deconv1_norm_attention = nn.InstanceNorm2d(ngf * 2)
+        self.deconv2_attention = nn.ConvTranspose2d(ngf * 2, ngf, 3, 2, 1, 1)
+        self.deconv2_norm_attention = nn.InstanceNorm2d(ngf)
+        self.deconv3_attention = nn.Conv2d(ngf, 10, 1, 1, 0)
+        
+        self.tanh = torch.nn.Tanh()
+
+
+    def forward(self, z, input):
         x = z
         x = self.UpBlock0(x)
 
@@ -85,7 +106,70 @@ class ResnetGenerator(nn.Module):
         for i in range(self.n_blocks):
             x = getattr(self, 'UpBlock1_' + str(i+1))(x, gamma, beta)
 
-        out = self.UpBlock2(x)
+        # out = self.UpBlock2(x)
+
+        x_content = F.relu(self.deconv1_norm_content(self.deconv1_content(x)))
+        x_content = F.relu(self.deconv2_norm_content(self.deconv2_content(x_content)))
+        x_content = F.pad(x_content, (3, 3, 3, 3), 'reflect')
+        content = self.deconv3_content(x_content)
+        image = self.tanh(content)
+        image1 = image[:, 0:3, :, :]
+        # print(image1.size()) # [1, 3, 256, 256]
+        image2 = image[:, 3:6, :, :]
+        image3 = image[:, 6:9, :, :]
+        image4 = image[:, 9:12, :, :]
+        image5 = image[:, 12:15, :, :]
+        image6 = image[:, 15:18, :, :]
+        image7 = image[:, 18:21, :, :]
+        image8 = image[:, 21:24, :, :]
+        image9 = image[:, 24:27, :, :]
+        # image10 = image[:, 27:30, :, :]
+
+        x_attention = F.relu(self.deconv1_norm_attention(self.deconv1_attention(x)))
+        x_attention = F.relu(self.deconv2_norm_attention(self.deconv2_attention(x_attention)))
+        # x_attention = F.pad(x_attention, (3, 3, 3, 3), 'reflect')
+        # print(x_attention.size()) [1, 64, 256, 256]
+        attention = self.deconv3_attention(x_attention)
+
+        softmax_ = torch.nn.Softmax(dim=1)
+        attention = softmax_(attention)
+
+        attention1_ = attention[:, 0:1, :, :]
+        attention2_ = attention[:, 1:2, :, :]
+        attention3_ = attention[:, 2:3, :, :]
+        attention4_ = attention[:, 3:4, :, :]
+        attention5_ = attention[:, 4:5, :, :]
+        attention6_ = attention[:, 5:6, :, :]
+        attention7_ = attention[:, 6:7, :, :]
+        attention8_ = attention[:, 7:8, :, :]
+        attention9_ = attention[:, 8:9, :, :]
+        attention10_ = attention[:, 9:10, :, :]
+
+        attention1 = attention1_.repeat(1, 3, 1, 1)
+        # print(attention1.size())
+        attention2 = attention2_.repeat(1, 3, 1, 1)
+        attention3 = attention3_.repeat(1, 3, 1, 1)
+        attention4 = attention4_.repeat(1, 3, 1, 1)
+        attention5 = attention5_.repeat(1, 3, 1, 1)
+        attention6 = attention6_.repeat(1, 3, 1, 1)
+        attention7 = attention7_.repeat(1, 3, 1, 1)
+        attention8 = attention8_.repeat(1, 3, 1, 1)
+        attention9 = attention9_.repeat(1, 3, 1, 1)
+        attention10 = attention10_.repeat(1, 3, 1, 1)
+
+        output1 = image1 * attention1
+        output2 = image2 * attention2
+        output3 = image3 * attention3
+        output4 = image4 * attention4
+        output5 = image5 * attention5
+        output6 = image6 * attention6
+        output7 = image7 * attention7
+        output8 = image8 * attention8
+        output9 = image9 * attention9
+        # output10 = image10 * attention10
+        output10 = input * attention10
+
+        out = output1 + output2 + output3 + output4 + output5 + output6 + output7 + output8 + output9 + output10
 
         return out
 
