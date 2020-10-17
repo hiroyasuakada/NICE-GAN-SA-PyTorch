@@ -7,10 +7,10 @@ from torch.optim import lr_scheduler
 import torch.nn.functional as F
 
 
-class ResnetGenerator(nn.Module):
+class ResnetGenerator_AG(nn.Module):
     def __init__(self, input_nc, output_nc, ngf=64, n_blocks=6, img_size=256, light=False):
         assert(n_blocks >= 0)
-        super(ResnetGenerator, self).__init__()
+        super(ResnetGenerator_AG, self).__init__()
         self.input_nc = input_nc
         self.output_nc = output_nc
         self.ngf = ngf
@@ -170,6 +170,93 @@ class ResnetGenerator(nn.Module):
         output10 = input * attention10
 
         out = output1 + output2 + output3 + output4 + output5 + output6 + output7 + output8 + output9 + output10
+
+        return out
+
+
+class ResnetGenerator(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_blocks=6, img_size=256, light=False):
+        assert(n_blocks >= 0)
+        super(ResnetGenerator, self).__init__()
+        self.input_nc = input_nc
+        self.output_nc = output_nc
+        self.ngf = ngf
+        self.n_blocks = n_blocks
+        self.img_size = img_size
+        self.light = light
+
+        n_downsampling = 2
+
+        mult = 2**n_downsampling
+        UpBlock0 = [nn.ReflectionPad2d(1),
+                nn.Conv2d(int(ngf * mult / 2), ngf * mult, kernel_size=3, stride=1, padding=0, bias=True),
+                ILN(ngf * mult),
+                nn.ReLU(True)]
+
+        self.relu = nn.ReLU(True)
+
+        # Gamma, Beta block
+        if self.light:
+            FC = [nn.Linear(ngf * mult, ngf * mult, bias=False),
+                  nn.ReLU(True),
+                  nn.Linear(ngf * mult, ngf * mult, bias=False),
+                  nn.ReLU(True)]
+        else:
+            FC = [nn.Linear(img_size // mult * img_size // mult * ngf * mult, ngf * mult, bias=False),
+                  nn.ReLU(True),
+                  nn.Linear(ngf * mult, ngf * mult, bias=False),
+                  nn.ReLU(True)]
+        self.gamma = nn.Linear(ngf * mult, ngf * mult, bias=False)
+        self.beta = nn.Linear(ngf * mult, ngf * mult, bias=False)
+
+        # Up-Sampling Bottleneck
+        for i in range(n_blocks):
+            setattr(self, 'UpBlock1_' + str(i+1), ResnetAdaILNBlock(ngf * mult, use_bias=False))
+
+        # Up-Sampling
+        UpBlock2 = []
+        for i in range(n_downsampling):
+            mult = 2**(n_downsampling - i)
+            # Experiments show that the performance of Up-sample and Sub-pixel is similar,
+            #  although theoretically Sub-pixel has more parameters and less FLOPs.
+            # UpBlock2 += [nn.Upsample(scale_factor=2, mode='nearest'),
+            #              nn.ReflectionPad2d(1),
+            #              nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
+            #              ILN(int(ngf * mult / 2)),
+            #              nn.ReLU(True)]
+            UpBlock2 += [nn.ReflectionPad2d(1),   
+                         nn.Conv2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=1, padding=0, bias=False),
+                         ILN(int(ngf * mult / 2)),
+                         nn.ReLU(True),
+                         nn.Conv2d(int(ngf * mult / 2), int(ngf * mult / 2)*4, kernel_size=1, stride=1, bias=True),
+                         nn.PixelShuffle(2),
+                         ILN(int(ngf * mult / 2)),
+                         nn.ReLU(True)
+                         ]
+
+        UpBlock2 += [nn.ReflectionPad2d(3),
+                     nn.Conv2d(ngf, output_nc, kernel_size=7, stride=1, padding=0, bias=False),
+                     nn.Tanh()]
+
+        self.FC = nn.Sequential(*FC)
+        self.UpBlock0 = nn.Sequential(*UpBlock0)
+        self.UpBlock2 = nn.Sequential(*UpBlock2)
+
+    def forward(self, z, input):
+        x = z
+        x = self.UpBlock0(x)
+
+        if self.light:
+            x_ = torch.nn.functional.adaptive_avg_pool2d(x, 1)
+            x_ = self.FC(x_.view(x_.shape[0], -1))
+        else:
+            x_ = self.FC(x.view(x.shape[0], -1))
+        gamma, beta = self.gamma(x_), self.beta(x_)
+
+        for i in range(self.n_blocks):
+            x = getattr(self, 'UpBlock1_' + str(i+1))(x, gamma, beta)
+
+        out = self.UpBlock2(x)
 
         return out
 

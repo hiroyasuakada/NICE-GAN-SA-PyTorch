@@ -116,8 +116,11 @@ class NICE(object) :
         self.testB_loader = DataLoader(self.testB, batch_size=1, shuffle=False,pin_memory=True)
 
         """ Define Generator, Discriminator """
-        self.gen2B = ResnetGenerator(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
-        self.gen2A = ResnetGenerator(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
+        self.gen2B = ResnetGenerator_AG(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
+        self.gen2A = ResnetGenerator_AG(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
+        # self.gen2B = ResnetGenerator(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
+        # self.gen2A = ResnetGenerator(input_nc=self.img_ch, output_nc=self.img_ch, ngf=self.ch, n_blocks=self.n_res, img_size=self.img_size, light=self.light).to(self.device)
+
         self.disA = Discriminator(input_nc=self.img_ch, ndf=self.ch, n_layers=self.n_dis).to(self.device)
         self.disB = Discriminator(input_nc=self.img_ch, ndf=self.ch, n_layers=self.n_dis).to(self.device)
 
@@ -444,8 +447,19 @@ class NICE(object) :
         self.G_optim.load_state_dict(params['G_optimizer'])
         self.start_iter = params['start_iter']
 
+    def load_for_test(self):
+        params = torch.load(os.path.join(self.result_dir, self.dataset, 'model',  self.dataset + '_params_0200000.pt'))
+        print('load {}'.format(os.path.join(self.result_dir, self.dataset, 'model',  self.dataset + '_params_0200000.pt')))
+        self.gen2B.load_state_dict(params['gen2B'])
+        self.gen2A.load_state_dict(params['gen2A'])
+        self.disA.load_state_dict(params['disA'])
+        self.disB.load_state_dict(params['disB'])
+        self.D_optim.load_state_dict(params['D_optimizer'])
+        self.G_optim.load_state_dict(params['G_optimizer'])
+        self.start_iter = params['start_iter']
+
     def test(self):
-        self.load()
+        self.load_for_test()
         print(self.start_iter)
 
         self.gen2B.eval(), self.gen2A.eval(), self.disA.eval(),self.disB.eval()
